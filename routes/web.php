@@ -5,13 +5,28 @@ use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\GroupController;
 use App\Http\Controllers\BillController;
 use App\Http\Controllers\BillItemController;
+use App\Models\Bill;
+use App\Models\Group;
+use App\Models\User;
 use Illuminate\Support\Facades\Route;
 
-Route::get('/', function () { return view('welcome'); });
+Route::get('/', function () {
+    return view('welcome', [
+        'groupsCount' => Group::count(),
+        'usersCount' => User::count(),
+        'billsCount' => Bill::count(),
+    ]);
+})->name('home');
+
+Route::get('/dashboard', function () {
+    return view('dashboard', [
+        'groupsCount' => Group::count(),
+        'usersCount' => User::count(),
+        'billsCount' => Bill::count(),
+    ]);
+})->name('dashboard');
 
 Route::middleware(['auth', 'verified'])->group(function () {
-    Route::get('/dashboard', function () { return view('dashboard'); })->name('dashboard');
-
     Route::resource('groups', GroupController::class)->except(['create']);
     Route::post('/groups/{group}/add-user', [GroupController::class, 'addUser'])->name('groups.add-user');
 

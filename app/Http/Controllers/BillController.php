@@ -7,6 +7,7 @@ use App\Models\Group;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class BillController extends Controller
 {
@@ -14,25 +15,33 @@ class BillController extends Controller
     {
         $this->authorizeGroupAccess($group);
 
-        $request->validate([
-            'description' => 'required|string|max:255',
-            'amount' => 'required|numeric|min:0.01',
-            'payer_id' => 'required|exists:users,id',
+        $validated = $request->validate([
+            'description' => ['required', 'string', 'max:255'],
+            'amount' => ['required', 'numeric', 'min:0.01'],
+            'payer_id' => [
+                'required',
+                Rule::exists('group_user', 'user_id')->where('group_id', $group->id),
+            ],
+        ], [
+            'description.required' => 'Podaj nazwe wydatku. Bez nazwy wydatek nie zostanie zapisany.',
+            'amount.required' => 'Podaj kwote wydatku.',
+            'amount.numeric' => 'Kwota musi byc liczba.',
+            'amount.min' => 'Kwota musi byc dodatnia. Nie mozna wpisac kwoty ujemnej ani zera.',
+            'payer_id.required' => 'Wybierz platnika.',
+            'payer_id.exists' => 'Platnik musi byc czlonkiem tej grupy.',
         ]);
 
-        abort_unless($group->users->contains($request->payer_id), 422, 'Platnik musi byc czlonkiem grupy.');
-
         $bill = $group->bills()->create([
-            'description' => $request->description,
-            'amount' => $request->amount,
-            'payer_id' => $request->payer_id,
+            'description' => $validated['description'],
+            'amount' => $validated['amount'],
+            'payer_id' => $validated['payer_id'],
             'date' => now(),
         ]);
 
-        $this->createEqualSplits($bill, $group, (int) $request->payer_id);
+        $this->createEqualSplits($bill, $group, (int) $validated['payer_id']);
 
         if (DB::getDriverName() !== 'mysql') {
-            $group->increment('total_amount', $request->amount);
+            $group->increment('total_amount', $validated['amount']);
         }
 
         return back()->with('success', 'Wydatek dodany!');

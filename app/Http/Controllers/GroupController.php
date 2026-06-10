@@ -6,39 +6,101 @@ use App\Models\Group;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Validation\Rule;
 
 class GroupController extends Controller
 {
-    public function index()
+    public function index(Request $request)
     {
-        $groups = auth()->user()->isAdmin()
-            ? Group::with('owner')->get()
-            : Auth::user()->groups;
+        $filters = $request->validate([
+            'search' => ['nullable', 'string', 'max:255'],
+            'owner' => ['nullable', 'string', 'max:255'],
+        ]);
 
-        return view('groups.index', compact('groups'));
+        $query = auth()->user()->isAdmin()
+            ? Group::query()
+            : Auth::user()->groups();
+
+        $groups = $query
+            ->with('owner')
+            ->withCount(['users', 'bills'])
+            ->when($filters['search'] ?? null, function ($query, string $search) {
+                $query->where(function ($query) use ($search) {
+                    $query->where('name', 'like', "%{$search}%")
+                        ->orWhere('description', 'like', "%{$search}%");
+                });
+            })
+            ->when(($filters['owner'] ?? null) && auth()->user()->isAdmin(), function ($query) use ($filters) {
+                $query->whereHas('owner', function ($query) use ($filters) {
+                    $query->where('name', 'like', '%'.$filters['owner'].'%')
+                        ->orWhere('email', 'like', '%'.$filters['owner'].'%');
+                });
+            })
+            ->orderBy('name')
+            ->paginate(8)
+            ->withQueryString();
+
+        return view('groups.index', [
+            'groups' => $groups,
+            'filters' => $filters,
+        ]);
     }
 
     public function store(Request $request)
     {
-        $request->validate(['name' => 'required|string|max:255']);
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255', 'unique:groups,name'],
+            'description' => ['nullable', 'string', 'max:1000'],
+        ], $this->groupValidationMessages());
 
         $group = Group::create([
-            'name' => $request->name,
+            'name' => $validated['name'],
+            'description' => $validated['description'] ?? null,
             'owner_id' => Auth::id(),
         ]);
 
-        $group->users()->attach(Auth::id());
+        $group->users()->syncWithoutDetaching([Auth::id()]);
 
         return redirect()->route('groups.index')->with('success', 'Grupa utworzona!');
     }
 
-    public function show(Group $group)
+    public function show(Request $request, Group $group)
     {
         $this->authorizeGroupAccess($group);
 
-        $group->load(['bills.payer', 'bills.items.users', 'bills.splits.user', 'users']);
+        $filters = $request->validate([
+            'bill_search' => ['nullable', 'string', 'max:255'],
+            'payer_id' => ['nullable', 'integer'],
+            'amount_from' => ['nullable', 'numeric', 'min:0'],
+            'amount_to' => ['nullable', 'numeric', 'min:0'],
+        ]);
 
-        return view('groups.show', compact('group'));
+        $group->load(['owner', 'users', 'bills.splits.user']);
+
+        $bills = $group->bills()
+            ->with(['payer', 'items.users', 'splits.user'])
+            ->when($filters['bill_search'] ?? null, function ($query, string $search) {
+                $query->where('description', 'like', "%{$search}%");
+            })
+            ->when($filters['payer_id'] ?? null, function ($query, int $payerId) {
+                $query->where('payer_id', $payerId);
+            })
+            ->when($filters['amount_from'] ?? null, function ($query, $amountFrom) {
+                $query->where('amount', '>=', $amountFrom);
+            })
+            ->when($filters['amount_to'] ?? null, function ($query, $amountTo) {
+                $query->where('amount', '<=', $amountTo);
+            })
+            ->orderByDesc('date')
+            ->orderByDesc('id')
+            ->paginate(5)
+            ->withQueryString();
+
+        return view('groups.show', [
+            'group' => $group,
+            'bills' => $bills,
+            'filters' => $filters,
+        ]);
     }
 
     public function edit(Group $group)
@@ -52,8 +114,15 @@ class GroupController extends Controller
     {
         $this->authorizeGroupOwnerOrAdmin($group);
 
-        $request->validate(['name' => 'required|string|max:255']);
-        $group->update(['name' => $request->name]);
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255', Rule::unique('groups', 'name')->ignore($group->id)],
+            'description' => ['nullable', 'string', 'max:1000'],
+        ], $this->groupValidationMessages());
+
+        $group->update([
+            'name' => $validated['name'],
+            'description' => $validated['description'] ?? null,
+        ]);
 
         return redirect()->route('groups.show', $group)->with('success', 'Grupa zaktualizowana.');
     }
@@ -62,15 +131,21 @@ class GroupController extends Controller
     {
         $this->authorizeGroupAccess($group);
 
-        $request->validate(['email' => 'required|email|exists:users,email']);
+        $validated = $request->validate([
+            'email' => ['required', 'email', 'exists:users,email'],
+        ], [
+            'email.required' => 'Podaj adres e-mail uzytkownika.',
+            'email.email' => 'Podaj poprawny adres e-mail.',
+            'email.exists' => 'Nie znaleziono uzytkownika o takim adresie e-mail.',
+        ]);
 
-        $userToAdd = User::where('email', $request->email)->first();
+        $userToAdd = User::where('email', $validated['email'])->first();
 
         if ($group->users->contains($userToAdd->id)) {
-            return back()->with('error', 'Ten uzytkownik juz jest w grupie!');
+            return back()->withInput()->with('error', 'Ten uzytkownik juz jest w grupie!');
         }
 
-        $group->users()->attach($userToAdd->id);
+        $group->users()->syncWithoutDetaching([$userToAdd->id]);
 
         return back()->with('success', 'Dodano uzytkownika: ' . $userToAdd->name);
     }
@@ -95,5 +170,14 @@ class GroupController extends Controller
         if (!auth()->user()->isAdmin() && $group->owner_id !== Auth::id()) {
             abort(403);
         }
+    }
+
+    private function groupValidationMessages(): array
+    {
+        return [
+            'name.required' => 'Podaj nazwe grupy.',
+            'name.unique' => 'Grupa o takiej nazwie juz istnieje. Nazwy grup nie moga sie powtarzac.',
+            'description.max' => 'Opis grupy moze miec maksymalnie 1000 znakow.',
+        ];
     }
 }

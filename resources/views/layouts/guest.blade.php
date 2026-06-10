@@ -23,8 +23,8 @@
             </div>
 
             <div>
-                <a href="/">
-                    <x-application-logo class="w-20 h-20 fill-current text-gray-500 dark:text-gray-300" />
+                <a href="/" class="text-2xl font-black tracking-tight text-indigo-700 dark:text-indigo-300">
+                    Rozliczenia
                 </a>
             </div>
 
