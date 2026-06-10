@@ -64,17 +64,23 @@ class BillController extends Controller
 
     private function createEqualSplits(Bill $bill, Group $group, int $payerId): void
     {
-        $members = $group->users;
-        if ($members->isEmpty()) {
+        $members = $group->users->sortBy('id')->values();
+        $membersCount = $members->count();
+
+        if ($membersCount === 0) {
             return;
         }
 
-        $share = round($bill->amount / $members->count(), 2);
+        $totalCents = (int) round((float) $bill->amount * 100);
+        $baseShareCents = intdiv($totalCents, $membersCount);
+        $remainingCents = $totalCents % $membersCount;
 
-        foreach ($members as $member) {
+        foreach ($members as $index => $member) {
+            $shareCents = $baseShareCents + ($index < $remainingCents ? 1 : 0);
+
             $bill->splits()->create([
                 'user_id' => $member->id,
-                'amount' => $share,
+                'amount' => number_format($shareCents / 100, 2, '.', ''),
                 'is_paid' => $member->id === $payerId,
             ]);
         }
